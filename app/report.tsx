@@ -1,10 +1,12 @@
-import React, { useState } from 'react';
+react:Report Screen:app/report.tsx
+import React, { useState, useEffect } from 'react';
 import {
   View, Text, Image, StyleSheet, TouchableOpacity,
   SafeAreaView, ScrollView, Alert, TextInput,
   Modal, ActivityIndicator,
 } from 'react-native';
 import { router } from 'expo-router';
+import * as SecureStore from 'expo-secure-store'; // 👈 FIXED: Added to retrieve local device identity
 import { Colors, Fonts, Spacing, Radius } from '../constants/theme';
 import { submitIncident } from '../hooks/useIncidents';
 import type { Incident } from '../types';
@@ -43,7 +45,7 @@ const FOLLOW_UP_QUESTIONS: Record<string, Question[]> = {
   
   domestic_conflict: [
     { id: 'physically_hurt',  label: 'Is anyone physically hurt?',         type: 'options', options: ['Yes', 'No', 'Not sure'] },
-    { id: 'children_present', label: 'Are children present?',              type: 'options', options: ['Yes', 'No'] },
+    { id: 'children_present', label: 'Are children present?',               type: 'options', options: ['Yes', 'No'] },
     { id: 'can_leave',        label: 'Is the door accessible to leave?',   type: 'options', options: ['Yes', 'No'] },
     { id: 'details',          label: 'Any additional details',             type: 'text' },
   ],
@@ -89,6 +91,7 @@ export default function ReportScreen() {
   const [showFollowUp, setShowFollowUp] = useState(false);
   const [showOtherModal, setShowOtherModal] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [deviceHash, setDeviceHash] = useState<string>(''); // 👈 FIXED: Track local device identity state
 
   // Follow up answers
   const [answers, setAnswers] = useState<Record<string, string>>({});
@@ -100,6 +103,21 @@ export default function ReportScreen() {
   const [relationship, setRelationship] = useState('');
   const [showReporterTypeModal, setShowReporterTypeModal] = useState(false);
   const [reporterType, setReporterType] = useState<'victim' | 'bystander' | null>(null);
+
+  // ── Retrieve Saved Device Hash ──────────────────────────────────────────
+  useEffect(() => {
+    async function loadDeviceCredentials() {
+      try {
+        const storedHash = await SecureStore.getItemAsync('device_hash');
+        if (storedHash) {
+          setDeviceHash(storedHash);
+        }
+      } catch (err) {
+        console.warn('Failed to resolve stored device credentials:', err);
+      }
+    }
+    loadDeviceCredentials();
+  }, []);
 
   const handleSelect = (incident: Incident) => {
     setSelectedIncident(incident);
@@ -140,6 +158,7 @@ export default function ReportScreen() {
       answers,
     );
 
+    // FIXED: Now passes device_hash down so Django view knows who is reporting
     await submitIncident({
       incident_id:   selectedIncident?.id || 'other',
       notes,
@@ -147,7 +166,8 @@ export default function ReportScreen() {
                 answers.still_active === 'Yes' ||
                 answers.still_ongoing === 'Yes'
         ? 'Critical' : 'High',
-      reporter_type: reporterType || 'bystander',  // ← add this line
+      reporter_type: reporterType || 'bystander',
+      device_hash:   deviceHash || undefined, // 👈 FIXED: Injected device_hash payload parameters
     });
 
     setLoading(false);
@@ -175,14 +195,16 @@ export default function ReportScreen() {
       relationship,
     );
 
+    // FIXED: Now passes device_hash down so Django view knows who is reporting
     await submitIncident({
       incident_id:               'other',
       notes,
       severity:                  'Medium',
-      reporter_type:             reporterType || 'bystander',  // ← add this line
+      reporter_type:             reporterType || 'bystander',
       victim_age:                victimAge ? parseInt(victimAge) : undefined,
       victim_gender:             victimGender || 'Unknown',
       perpetrator_relationship:  relationship || 'Unknown',
+      device_hash:               deviceHash || undefined, // 👈 FIXED: Injected device_hash payload parameters
     });
 
     setLoading(false);
@@ -725,3 +747,9 @@ const styles = StyleSheet.create({
 });
 
 
+### What Changed?
+1. **Added `expo-secure-store` Import**: To interact with the device's keychain/hardware storage safely.
+2. **Setup Mount Effect (`useEffect`)**: Retrieved `device_hash` when the screen loads and placed it into a state-tracked variable (`deviceHash`).
+3. **Updated API Mutation Hooks**: Injected `device_hash: deviceHash || undefined` directly into the payloads for both `handleSubmitFollowUp` and `handleSubmitOther`. 
+
+Now, when a user creates a standard categorized report, it will securely pass the mobile terminal's hardware signature. The Django API will parse this automatically, bind the registered profile, and correctly serve the device's historical records and emergency contact tables on your Next.js backoffice dashboard detail page!
